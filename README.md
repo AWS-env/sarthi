@@ -52,21 +52,25 @@ The full brief is in [`reference/PROBLEM-STATEMENT.md`](reference/PROBLEM-STATEM
 | "Not found" reply when nothing in the rulebook is relevant | `apps/api/app/chat.py` (`NOT_FOUND_BELOW`) | Works |
 | Questions about a named rule ("what does rule 23 say") fetch that rule directly | `apps/api/app/retrieval.py` | Works |
 | Voice input via Sarvam AI speech-to-text | `apps/web/components/MicButton.tsx`, `apps/api/app/stt.py` | Works |
+| "Listen" playback of an answer via Sarvam AI text-to-speech | `apps/web/components/SpeakButton.tsx`, `apps/api/app/speak.py` | Works |
+| Clickable citations open the official English or Hindi PDF at the cited page | `apps/web/components/ChatPanel.tsx`, `apps/web/public/rules/` | Works |
 | Apple Watch app: ask by voice, hear the answer, see the rule number and PDF page | `watch/Sarthi/` | Works. See [Apple Watch app](#apple-watch-app) |
 | WhatsApp bot (Cloud API webhook): text and voice-note questions, answered with rule citations; voice notes also get a spoken reply | `apps/web/app/webhooks/whatsapp/route.ts`, `apps/api/app/tts.py` | Works |
+| ElevenLabs phone agent that answers caller questions from the same rulebook | `apps/web/app/webhooks/elevenlabs/route.ts` | Works |
 | Neo4j graph of rules and cross-references (optional) | `apps/api/scripts/index_graph.py` | Built |
 
 ## How it works
 
 ```
 Browser ──► Next.js 16 (apps/web)  ──── x-bff-secret ────►  FastAPI (apps/api)
-            · proxy.ts checks the                            · /chat  /stt  /tts  /health
+            · proxy.ts checks the                            · /chat  /stt  /speak  /tts  /health
               Supabase session                                     │
             · /api/chat, /api/stt,                                 ├─► Cerebras  (query rewrite + answer)
-              /api/py/* forward to                                 ├─► Qdrant Cloud (dense + BM25 hybrid)
+              /api/tts, /api/py/* forward to                       ├─► Qdrant Cloud (dense + BM25 hybrid)
               FastAPI server-side                                  ├─► fastembed, local (embeddings + reranker)
                                                                    └─► Sarvam AI (speech-to-text + text-to-speech, optional)
 WhatsApp (Meta) ─► /webhooks/whatsapp (HMAC) ─ x-bff-secret ──►  FastAPI
+ElevenLabs agent ─► /webhooks/elevenlabs (x-tool-secret) ─ x-bff-secret ──►  FastAPI
 Apple Watch ─────────── x-bff-secret (direct, no Supabase) ──►  FastAPI
 ```
 
@@ -98,7 +102,7 @@ If `CEREBRAS_MODEL` fails, the API retries once with `CEREBRAS_FALLBACK_MODEL`. 
 | Vector search | Qdrant Cloud, with named vectors `dense` (384-dim) and `bm25` (sparse) in one collection |
 | Embeddings / rerank | [fastembed](https://github.com/qdrant/fastembed), running locally on CPU (about 70 MB of models) |
 | LLM | Cerebras Inference (OpenAI-compatible chat completions) |
-| Speech-to-text | Sarvam AI `saarika:v2.5`, with automatic language detection |
+| Speech | Sarvam AI `saarika:v2.5` for speech-to-text (automatic language detection) and `bulbul:v3` for text-to-speech |
 | Monorepo | npm workspaces + Turborepo |
 
 ## Measured quality
@@ -185,10 +189,12 @@ To test on a phone on the same Wi-Fi, run `npm run dev:lan -w api` instead, whic
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | yes | Supabase public (anon) key |
 | `BFF_SHARED_SECRET` | yes | Random string; must match the API's value |
 | `BACKEND_URL` | yes | FastAPI base URL, e.g. `http://127.0.0.1:8000` |
+| `DEMO_EMAIL`, `DEMO_PASSWORD` | no | One-click demo login on `/login`; the account is created on first use |
 | `WHATSAPP_VERIFY_TOKEN` | WhatsApp only | Token Meta sends when you save the callback URL |
 | `WHATSAPP_APP_SECRET` | WhatsApp only | Used to verify the `x-hub-signature-256` header |
 | `WHATSAPP_ACCESS_TOKEN` | WhatsApp only | Graph API token for sending replies |
 | `WHATSAPP_GRAPH_VERSION` | no | Defaults to `v23.0` |
+| `ELEVENLABS_TOOL_SECRET` | voice agent only | Shared secret the ElevenLabs agent sends as `x-tool-secret` |
 
 ### `apps/api/.env`
 
@@ -295,8 +301,10 @@ The browser only calls the Next.js routes. Every FastAPI route requires the `x-b
 |---|---|---|---|
 | `POST /api/chat` | Supabase session | `POST /chat` | JSON chat request |
 | `POST /api/stt` | Supabase session | `POST /stt` | Raw audio bytes (has its own route because the generic proxy would corrupt binary data) |
+| `POST /api/tts` | Supabase session | `POST /speak` | Reads an answer aloud; returns base64 WAV clips |
 | `* /api/py/<path>` | Supabase session | `* /<path>` | Generic text/JSON passthrough, e.g. `/api/py/health` |
 | `GET/POST /webhooks/whatsapp` | Meta verify token / HMAC signature | `POST /chat`, `POST /stt`, `POST /tts` | Sits outside `/api` so Meta can reach it without a session. Returns `200` immediately and replies in the background |
+| `POST /webhooks/elevenlabs` | `x-tool-secret` header | `POST /chat` | Server tool for the ElevenLabs phone agent; returns plain-text answer + cited rule numbers |
 
 ### `POST /chat`
 
@@ -318,6 +326,10 @@ Errors: `400` if the last message is not from the user, `401` without the secret
 
 Send raw audio in the body (`content-type` such as `audio/webm`, up to 5 MB / ~30 s). The response is `{ "transcript": "…", "language_code": "hi-IN" }`.
 
+### `POST /speak`
+
+Send `{ "text": "…" }`. Markdown and tables are stripped, long answers are split on sentence boundaries, and the language is picked from the script (Devanagari → `hi-IN`, otherwise `en-IN`). The response is `{ "audios": ["<base64 WAV>", …] }`, played back to back by the Listen button. Errors: `503` if `SARVAM_API_KEY` is not set or Sarvam is busy, `502` if Sarvam fails.
+
 ### `POST /tts`
 
 Send `{ "text": "…", "language_code": "hi-IN" }` (`language_code` is optional; unsupported or missing codes fall back to `hi-IN`). Markdown/WhatsApp formatting is stripped and long text is cut to 2,500 characters on a sentence boundary. The response is Ogg/Opus audio (`audio/ogg`), the format WhatsApp needs for voice notes. Errors: `503` if `SARVAM_API_KEY` is not set, `502` if Sarvam fails.
@@ -332,6 +344,7 @@ Returns `{ "status": "ok" }`.
 - **Route protection.** `apps/web/proxy.ts` (the Next.js 16 replacement for middleware) redirects signed-out users from `/chat` to `/login` and returns `401` for `/api/*`.
 - **Cookies.** Session cookies are `httpOnly`, and `secure` in production.
 - **WhatsApp.** Webhook requests are rejected unless their HMAC-SHA256 signature matches `WHATSAPP_APP_SECRET`.
+- **ElevenLabs tool.** `/webhooks/elevenlabs` requires the `x-tool-secret` header, compared in constant time with `ELEVENLABS_TOOL_SECRET`.
 - **No personal data** is stored by this app. Chat history is not saved on the server. Audio and questions are sent to Sarvam AI and Cerebras respectively.
 
 ## Deployment
@@ -357,9 +370,12 @@ npm run lint    # turbo run lint
 │   │   │   ├── chat/             protected chat screen
 │   │   │   ├── api/chat/         → FastAPI /chat
 │   │   │   ├── api/stt/          → FastAPI /stt (raw audio)
+│   │   │   ├── api/tts/          → FastAPI /speak (Listen button)
 │   │   │   ├── api/py/[...path]/ generic passthrough
-│   │   │   └── webhooks/whatsapp/ WhatsApp bot (text + voice notes)
-│   │   ├── components/           ChatPanel, MicButton
+│   │   │   ├── webhooks/whatsapp/ WhatsApp bot (text + voice notes)
+│   │   │   └── webhooks/elevenlabs/ ElevenLabs phone agent server tool
+│   │   ├── components/           ChatPanel, MicButton, SpeakButton
+│   │   ├── public/rules/         official EN/HI rulebook PDFs (citation links)
 │   │   ├── lib/supabase/         server-side Supabase client
 │   │   └── proxy.ts              session check + route protection
 │   └── api/                      FastAPI backend (Python 3.12, uv)
@@ -368,6 +384,7 @@ npm run lint    # turbo run lint
 │       │   ├── chat.py           rewrite → retrieve → answer
 │       │   ├── retrieval.py      hybrid search + rerank
 │       │   ├── stt.py            Sarvam speech-to-text
+│       │   ├── speak.py          Sarvam text-to-speech (browser Listen)
 │       │   └── tts.py            Sarvam text-to-speech (WhatsApp voice replies)
 │       ├── data/                 derived data + golden eval sets
 │       └── scripts/              data pipeline, indexing, evaluation
@@ -396,4 +413,4 @@ https://youtube.com/shorts/aXNzBXW7eJY?feature=share
 https://youtu.be/zQ51H6ht0Bo?si=HhqQssPlog7aTL-F
 
 
-*README last reviewed: 13 October 2026.*
+*README last reviewed: 18 October 2026.*
