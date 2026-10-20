@@ -26,6 +26,7 @@ A question-answering tool for the **MP Bhumi Vikas Rules, 2012**. A clerk asks i
 - [Deployment](#deployment)
 - [Project layout](#project-layout)
 - [Data sources](#data-sources)
+- [Demo](#demo)
 
 ---
 
@@ -400,17 +401,24 @@ npm run lint    # turbo run lint
 - Everything in `apps/api/data/` is derived from that pack by the scripts above.
 - No other data was added, no personal data is included, and no live government system was used.
 
-### whatsapp qr
+## Demo
 
-<img width="656" height="656" alt="whatsapp_hi_qr" src="https://github.com/user-attachments/assets/90be2a8c-9bca-4636-a0e7-ae7bc9614337" />
+### WhatsApp QR
 
-### Demo video of calling agent 
+<p align="left">
+  <img width="260" alt="WhatsApp QR code for the Sarthi bot" src="whatsapp_hi_qr.png">
+</p>
+
+### Phone calling agent (ElevenLabs)
+
+The ElevenLabs agent POSTs the caller's question to `/webhooks/elevenlabs`, which forwards it to `/chat` and returns a plain-text answer plus the cited rule numbers for the agent to speak. `batch_calling_template.csv` is the batch-call import template (phone number, language, voice, first message, prompt, city).
 
 https://youtube.com/shorts/aXNzBXW7eJY?feature=share
 
+### Apple Watch demo
 
-### Demo video of the Watch  
 https://youtu.be/zQ51H6ht0Bo?si=HhqQssPlog7aTL-F
 
+---
 
 *README last reviewed: 18 October 2026.*
